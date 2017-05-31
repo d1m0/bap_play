@@ -1,7 +1,11 @@
 from bap import disasm
 from bap.adt import Visitor
 from ..util import flatten
-from copy import copy
+from z3 import If, BitVec, eq
+
+
+def boolToBV(boolExp, ctx):
+    return If(boolExp, BitVec(1, 1, ctx=ctx), BitVec(0, 1, ctx=ctx), ctx=ctx)
 
 
 def bitsToBil(bits, target='x86-64'):
@@ -9,8 +13,7 @@ def bitsToBil(bits, target='x86-64'):
 
 
 def neverSeen(adt):
-    print "Never seen: ", adt.constr, adt.arg
-    assert False, "Never seen it"
+    assert False, "Never seen " + adt.constr
 
 
 class Stack(list):
@@ -18,12 +21,84 @@ class Stack(list):
         return self.append(arg)
 
 
-class Env(dict):
-    def __getitem__(self, name):
-        try:
-            return dict.__getitem__(self, name)
-        except KeyError:
-            return 0
+class StmtNode:
+    sId = 0
+
+    def __init__(self, parents):
+        self.mDef = {}
+        self.mSort = {}
+        self.mPrefix = ""
+        self.mCond = []
+        # Assert simpler tree structures - only 2-way branch/join from ifs
+        assert (len(parents) <= 2)
+        self.mParents = parents
+        self.mSplitSrc = None
+        self.mId = StmtNode.sId
+        StmtNode.sId += 1
+
+    def lookupDef(self, name, cache=False):
+        if name in self.mDef:
+            return self
+        elif len(self.mParents) == 1:
+            return self.mParents[0].lookupDef(name)
+        elif len(self.mParents) > 1:
+            defs = set([x.lookupDef(name) for x in self.mParents])
+            if (len(defs) == 1):
+                # If all agree it hasn't been modified in some branch
+                return list(defs)[0]
+            else:
+                # name has been defined independently in different branches.
+                # Need a phi def here
+                # Make sure all definitions have the same sort
+                s = defs[0].mSort[name]
+                for d in defs:
+                    assert eq(s, d.mSort[name])
+
+                self.mDef[name] = defs
+                self.mSort[name] = s
+                return self
+        else:
+            return None
+
+    def cond(self, other):
+        if (self == other):
+            return []
+        elif (len(self.mParents) == 1):
+            c = self.mParents[0].cond()
+        elif (len(self.mParents) > 1):
+            c = self.mSplitSrc.cond()
+        else:
+            assert False, str(other) + " doesn't dominate " + str(self)
+
+        return c + self.mCond
+
+    def prefix(self):
+        if len(self.mParents) == 1:
+            return self.mParents[0].prefix() + self.mPrefix
+        elif len(self.mParents) > 1:
+            return self.mSplitSrc.prefix() + self.mPrefix
+        else:
+            return self.mPrefix
+
+
+class StmtDef(StmtNode):
+    def __init__(self, parent, **kwArgs):
+        StmtNode.__init__(self, [parent])
+        self.mDef = kwArgs
+        self.mSort = {k: v.sort() for (k, v) in kwArgs.iteritems()}
+
+
+class StmtBranch(StmtNode):
+    def __init__(self, parent, cond, prefix):
+        StmtNode.__init__(self, [parent])
+        self.mCond = cond
+        self.mPrefix = prefix
+
+
+class StmtJoin(StmtNode):
+    def __init__(self, parents, splitSrc):
+        StmtNode.__init__(self, parents)
+        self.mSplitSrc = splitSrc
 
 
 class Z3Embedder(Visitor):
@@ -33,25 +108,37 @@ class Z3Embedder(Visitor):
     def __init__(self, ctx):
         Visitor.__init__(self)
         self.mStack = Stack()
-        self.mScopeStack = [Env()]
+        self.mRoot = StmtNode([])
+        self.mScope = self.mRoot
         self.mCtx = ctx
-        self.defs = {}
 
     def pushScope(self, **kwArgs):
         if (len(kwArgs) == 0):
             raise TypeError("Can't push a scope unless we modify some vars")
 
-        newEnv = copy(self.mScopeStack[-1])
-        self.mScopeStack.append(newEnv)
+        self.mScope = StmtDef(self.mScope, **kwArgs)
 
-        for (var, val) in kwArgs.iteritems():
-            if type(var) != str:
-                raise TypeError("Var names should be string")
-            newEnv[var] = newEnv[var] + 1
-            self.defs[self.lookup(var)] = val
+    def pushBranchScope(self, prefix, cond, fromScope):
+        self.mScope = StmtBranch(fromScope, cond, prefix)
+
+    def pushJoinScope(self, left, right, split):
+        self.mScope = StmtJoin([left, right], split)
 
     def popScope(self):
-        return self.mScopeStack.pop()
+        # Can only pop Def scopes (related to Let exprs)
+        assert len(self.mScope.mParents) == 1 and\
+            isinstance(self.mScope, StmtDef)
+        res = self.mScope
+        self.mScope = self.mScope.mParents[0]
+        return res
 
     def lookup(self, name):
-        return name + "." + str(self.mScopeStack[-1][name])
+        defNode = self.mScope.lookupDef(name)
+        if (defNode):
+            return (name + defNode.prefix() + "." + str(defNode.mId),
+                    defNode.mSort[name])
+        else:
+            return (name, None)
+
+    def scopeMarker(self):
+        return self.mScope

@@ -1,22 +1,87 @@
-from bap.bil import Exp, LittleEndian
+from bap.bil import Exp, LittleEndian, Stmt
 from bap.adt import visit
 from z3 import BitVecVal, BitVecSort, Context, ArraySort, eq, Array,\
-    Select, Concat
+    Select, Concat, Const, BitVec, Extract, ULE, ULT, LShR, Update, \
+    ZeroExt, If, SignExt, UDiv, URem
 from .null_embedder import NullZ3Embedder
-from .embedder import neverSeen
+from .embedder import neverSeen, StmtDef, boolToBV
+
+unused = [neverSeen]
 
 
 class X86_64Z3Embedder(NullZ3Embedder):
-    """ Z3 BIL Visitor. Entry points correpsond to
-        the ADTs defined in the bap.bil module
+    """ X86_64 + AVX Embedder
     """
     def __init__(self, ctx):
         NullZ3Embedder.__init__(self, ctx)
         addr_size = 64
         val_size = 8
-        self.defs["mem64.0"] = Array("mem64",
-                                     BitVecSort(addr_size, ctx=ctx),
-                                     BitVecSort(val_size, ctx=ctx))
+
+        self.mScope = \
+            StmtDef(self.mScope,
+                    # Heap
+                    mem64=Array("mem64",
+                                BitVecSort(addr_size, ctx=ctx),
+                                BitVecSort(val_size, ctx=ctx)),
+                    # Flags
+                    CF=BitVec("CF", 1, ctx=ctx),
+                    AF=BitVec("AF", 1, ctx=ctx),
+                    ZF=BitVec("ZF", 1, ctx=ctx),
+                    SF=BitVec("SF", 1, ctx=ctx),
+                    OF=BitVec("OF", 1, ctx=ctx),
+                    PF=BitVec("PF", 1, ctx=ctx),
+                    DF=BitVec("DF", 1, ctx=ctx),
+                    # Regs
+                    RAX=BitVec("RAX.0", 64, ctx=ctx),
+                    RBX=BitVec("RBX.0", 64, ctx=ctx),
+                    RCX=BitVec("RCX.0", 64, ctx=ctx),
+                    RDX=BitVec("RDX.0", 64, ctx=ctx),
+                    RSP=BitVec("RSP.0", 64, ctx=ctx),
+                    RBP=BitVec("RBP.0", 64, ctx=ctx),
+                    RSI=BitVec("RSI.0", 64, ctx=ctx),
+                    RDI=BitVec("RDI.0", 64, ctx=ctx),
+                    R8=BitVec("R8.0", 64, ctx=ctx),
+                    R9=BitVec("R9.0", 64, ctx=ctx),
+                    R10=BitVec("R10.0", 64, ctx=ctx),
+                    R11=BitVec("R11.0", 64, ctx=ctx),
+                    R12=BitVec("R12.0", 64, ctx=ctx),
+                    R13=BitVec("R13.0", 64, ctx=ctx),
+                    R14=BitVec("R14.0", 64, ctx=ctx),
+                    R15=BitVec("R15.0", 64, ctx=ctx),
+                    # Segment Registers
+                    FS_BASE=BitVec("fs", 64, ctx=ctx),
+                    GS_BASE=BitVec("gs", 64, ctx=ctx),
+                    SS_BASE=BitVec("ss", 64, ctx=ctx),
+                    DS_BASE=BitVec("ds", 64, ctx=ctx),
+                    # AVX Registers
+                    YMM0=BitVec("YMM0", 256, ctx=ctx),
+                    YMM1=BitVec("YMM1", 256, ctx=ctx),
+                    YMM2=BitVec("YMM2", 256, ctx=ctx),
+                    YMM3=BitVec("YMM3", 256, ctx=ctx),
+                    YMM4=BitVec("YMM4", 256, ctx=ctx),
+                    YMM5=BitVec("YMM5", 256, ctx=ctx),
+                    YMM6=BitVec("YMM6", 256, ctx=ctx),
+                    YMM7=BitVec("YMM7", 256, ctx=ctx),
+                    YMM8=BitVec("YMM8", 256, ctx=ctx),
+                    YMM9=BitVec("YMM9", 256, ctx=ctx),
+                    YMM10=BitVec("YMM10", 256, ctx=ctx),
+                    YMM11=BitVec("YMM11", 256, ctx=ctx),
+                    YMM12=BitVec("YMM12", 256, ctx=ctx),
+                    YMM13=BitVec("YMM13", 256, ctx=ctx),
+                    YMM14=BitVec("YMM14", 256, ctx=ctx),
+                    YMM15=BitVec("YMM15", 256, ctx=ctx),
+                    # Model only registers
+                    CPUEXN=BitVec("CPUEXN", 1, ctx=ctx))  # is excn raised?
+        self.mNumUnknowns = 0
+
+    def getFreshUnknown(self, typ):
+        newUnknown = "unknown_" + str(self.mNumUnknowns)
+        z3Unknown = Const(newUnknown, typ)
+        self.mScope.mDef[newUnknown] = z3Unknown
+        self.mScope.mSort[newUnknown] = typ
+
+        self.mNumUnknowns += 1
+        return z3Unknown
 
     # Types
     def leave_Imm(self, typ):
@@ -36,11 +101,12 @@ class X86_64Z3Embedder(NullZ3Embedder):
 
     def leave_Var(self, expr):
         name, typ = expr.arg
-        z3Name = self.lookup(name)
-        z3Sort = self.mStack.pop()
-        assert z3Name in self.defs
-        assert eq(self.defs[z3Name].sort(), z3Sort)
-        self.mStack.push(self.defs[z3Name])
+        z3Name, z3DefSort = self.lookup(name)
+        z3ExpectedSort = self.mStack.pop()
+        assert z3DefSort is not None, \
+            "Lookup of undefined variable " + name
+        assert z3DefSort == z3ExpectedSort
+        self.mStack.push(Const(z3Name, z3DefSort))
 
     # Expressions
     #   Ternary Ops
@@ -51,14 +117,21 @@ class X86_64Z3Embedder(NullZ3Embedder):
         self.run(val)
         z3Val = self.mStack.pop()
         # Push the new scope and define var=z3val
-        self.pushScope(var, z3Val)
+        self.pushScope(**{var.name: z3Val})
         # Evaluate expr in the new scope
         self.run(expr)
         z3Expr = self.mStack.pop()
         # Pop the let scope
         self.popScope()
-
         self.mStack.push(z3Expr)
+
+    def leave_Ite(self, expr):
+        falseE = self.mStack.pop()
+        trueE = self.mStack.pop()
+        cond = self.mStack.pop()
+        assert eq(cond.sort(), BitVecSort(1, ctx=self.mCtx))
+        boolCond = cond == BitVecVal(1, 1, ctx=self.mCtx)
+        self.mStack.push(If(boolCond, trueE, falseE, ctx=self.mCtx))
 
     #   Binary Ops
     def leave_PLUS(self, expr):
@@ -66,13 +139,175 @@ class X86_64Z3Embedder(NullZ3Embedder):
         lhs = self.mStack.pop()
         self.mStack.push(lhs + rhs)
 
+    def leave_MINUS(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(lhs - rhs)
+
+    def leave_TIMES(self, stmt):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(lhs * rhs)
+
+    def leave_DIVIDE(self, stmt):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(UDiv(lhs, rhs))
+
+    def leave_SDIVIDE(self, stmt):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(lhs / rhs)
+
+    def leave_MOD(self, stmt):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(URem(lhs, rhs))
+
+    def leave_SMOD(self, stmt):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(lhs % rhs)
+
+    def leave_XOR(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(lhs ^ rhs)
+
+    def leave_AND(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(lhs & rhs)
+
+    def leave_OR(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(lhs | rhs)
+
+    # Z3 requires that lhs and rhs of
+    # a shift be of the same size.
+    @staticmethod
+    def equalize(lhs, rhs):
+        lhsSize = lhs.sort().size()
+        rhsSize = rhs.sort().size()
+
+        if (lhsSize < rhsSize):
+            assert False, "NYI"
+        elif (lhsSize > rhsSize):
+            return (lhs, ZeroExt(lhsSize-rhsSize, rhs))
+        else:
+            return (lhs, rhs)
+
+    def leave_RSHIFT(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        lhs, rhs = X86_64Z3Embedder.equalize(lhs, rhs)
+        self.mStack.push(LShR(lhs, rhs))
+
+    def leave_LSHIFT(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        lhs, rhs = X86_64Z3Embedder.equalize(lhs, rhs)
+        self.mStack.push(lhs << rhs)
+
+    def leave_ARSHIFT(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        lhs, rhs = X86_64Z3Embedder.equalize(lhs, rhs)
+        self.mStack.push(lhs >> rhs)
+
+    #  Comparisons
+    def leave_EQ(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        boolCmp = lhs == rhs
+        self.mStack.push(boolToBV(boolCmp, self.mCtx))
+
+    def leave_NEQ(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        boolCmp = lhs != rhs
+        self.mStack.push(boolToBV(boolCmp, self.mCtx))
+
+    def leave_LT(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        boolCmp = ULT(lhs, rhs)
+        self.mStack.push(boolToBV(boolCmp, self.mCtx))
+
+    def leave_LE(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        boolCmp = ULE(lhs, rhs)
+        self.mStack.push(boolToBV(boolCmp, self.mCtx))
+
+    def leave_SLT(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        boolCmp = lhs < rhs  # < is signed in pyz3 by default
+        self.mStack.push(boolToBV(boolCmp, self.mCtx))
+
+    def leave_SLE(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        boolCmp = lhs <= rhs  # <= is signed in pyz3 by default
+        self.mStack.push(boolToBV(boolCmp, self.mCtx))
+
+    def leave_Concat(self, expr):
+        rhs = self.mStack.pop()
+        lhs = self.mStack.pop()
+        self.mStack.push(Concat(lhs, rhs))
+
     #   Unary Ops
     def leave_NEG(self, expr):
         assert isinstance(expr.arg, Exp)
         expr = self.mStack.pop()
         self.mStack.push(-expr)
 
+    def leave_NOT(self, expr):
+        assert isinstance(expr.arg, Exp)
+        expr = self.mStack.pop()
+        self.mStack.push(~expr)
+
     #   Casts Ops
+    def leave_HIGH(self, expr):
+        assert len(expr.arg) == 2 and\
+            type(expr.arg[0]) == int and\
+            isinstance(expr.arg[1], Exp)
+        numBits = expr.arg[0]
+        expr = self.mStack.pop()
+        width = expr.sort().size()
+        self.mStack.push(Extract(width-1, width-numBits, expr))
+
+    def leave_LOW(self, expr):
+        assert len(expr.arg) == 2 and\
+            type(expr.arg[0]) == int and\
+            isinstance(expr.arg[1], Exp)
+        numBits = expr.arg[0]
+        expr = self.mStack.pop()
+        self.mStack.push(Extract(numBits-1, 0, expr))
+
+    def leave_Extract(self, expr):
+        hb, lb, _ = expr.arg
+        expr = self.mStack.pop()
+        self.mStack.push(Extract(hb, lb, expr))
+
+    def leave_Unknown(self, expr):
+        assert len(expr.arg) == 2
+        typ = self.mStack.pop()
+        self.mStack.push(self.getFreshUnknown(typ))
+
+    def leave_UNSIGNED(self, expr):
+        size, _ = expr.arg
+        exp = self.mStack.pop()
+        # TODO: Is this the correct z3 primitive?
+        self.mStack.push(ZeroExt(size - exp.sort().size(), exp))
+
+    def leave_SIGNED(self, expr):
+        size, _ = expr.arg
+        exp = self.mStack.pop()
+        # TODO: Is this the correct z3 primitive?
+        self.mStack.push(SignExt(size - exp.sort().size(), exp))
 
     #   Mem Ops
     def leave_Load(self, expr):
@@ -83,27 +318,95 @@ class X86_64Z3Embedder(NullZ3Embedder):
 
         assert isinstance(endianness, LittleEndian)
         assert size % 8 == 0 and \
-            memV.sort().domain().size() % 8 == 0 and \
-            size >= memV.sort().domain().size()
+            memV.sort().range().size() % 8 == 0 and \
+            size >= memV.sort().range().size() and \
+            eq(off.sort(), memV.sort().domain())
 
         # Least signifficant first
         byts = [Select(memV, off + idx) for idx in range(0, size/8)]
-        self.mStack.push(Concat(*reversed(byts)))  # Select expects lsb last
+        if (len(byts) == 1):
+            self.mStack.push(byts[0])  # Select expects lsb last
+        else:
+            # Select expects lsb last
+            self.mStack.push(Concat(*reversed(byts)))
 
     def leave_Store(self, expr):
-        memVar, off, value, endianness, size = expr.arg
+        _, _, _, endianness, size = expr.arg
         # We didn't push anything for endianness. Assume little endian
         value = self.mStack.pop()
+        off = self.mStack.pop()
         memV = self.mStack.pop()
-        print memV, off, value, size
-        # TODO: Store individual bytes into the right places
-        neverSeen(expr)
+
+        assert isinstance(endianness, LittleEndian)
+        assert size % 8 == 0 and \
+            memV.sort().domain().size() % 8 == 0 and \
+            size >= memV.sort().range().size() and \
+            size == value.sort().size() and \
+            eq(off.sort(), memV.sort().domain())
+
+        byts = [Extract((idx+1)*8-1, idx*8, value) for idx in range(0, size/8)]
+        for (i, b) in enumerate(byts):
+            memV = Update(memV, off + i, b)
+        self.mStack.push(memV)
+
+    # Stmts
+    def visit_Move(self, stmt):
+        # Need to visit move to avoid calling leave_Var on the (potentially yet
+        # undefined) lhs
+        assert len(stmt.arg) == 2
+        newBindingName = stmt.var.name
+
+        self.run(stmt.expr)
+        expr = self.mStack.pop()
+
+        oldSSAName, oldSort = self.lookup(newBindingName)
+        if oldSort is not None:
+            # If defined, cannot redefine type
+            assert eq(expr.sort(), oldSort), \
+                "Redefining " + newBindingName + " from " +\
+                str(oldSort) + " to " +\
+                str(expr.sort())
+
+        self.pushScope(**{newBindingName: expr})
+        return True
+
+    def visit_If(self, stmt):
+        cond, if_stmt, else_stmt = stmt.arg
+        assert isinstance(cond, Exp) and\
+            isinstance(if_stmt, Stmt) or isinstance(if_stmt, tuple) and\
+            isinstance(else_stmt, Stmt) or isinstance(else_stmt, tuple)
+
+        # Get the condition
+        self.run(cond)
+        z3Cond = self.mStack.pop()
+
+        # Mark current position on stack
+        beforeIf = self.scopeMarker()
+
+        # run on if branch
+        trueCond = z3Cond == BitVecVal(1, 1, self.mCtx)
+        self.pushBranchScope('.if_true', trueCond, beforeIf)
+        self.run(if_stmt)
+
+        endIfStmt = self.scopeMarker()
+
+        # run on else branch (reading from current position on stack)
+        falseCond = z3Cond == BitVecVal(0, 1, self.mCtx)
+        self.pushBranchScope('.if_false', falseCond, beforeIf)
+        self.run(else_stmt)
+
+        endElseStmt = self.scopeMarker()
+
+        self.pushJoinScope(endIfStmt, endElseStmt, beforeIf)
 
     def leave_Jmp(self, stmt):
         assert isinstance(stmt.arg, Exp)
         dest = self.mStack.pop()
         self.pushScope(RIP=dest)
         # Doesn't return a value
+
+    def leave_CpuExn(self, stmt):
+        self.pushScope(CPUEXN=BitVecVal(1, 1, ctx=self.mCtx))
 
 
 def embed(bil):

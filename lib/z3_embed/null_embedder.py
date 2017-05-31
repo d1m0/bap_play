@@ -100,16 +100,16 @@ class NullZ3Embedder(Z3Embedder):
         neverSeen(expr)
 
     #   Casts Ops
-    def leave_UNSIGNED(expr):
+    def leave_UNSIGNED(self, expr):
         neverSeen(expr)
 
-    def leave_signed(expr):
+    def leave_SIGNED(self, expr):
         neverSeen(expr)
 
-    def leave_HIGH(expr):
+    def leave_HIGH(self, expr):
         neverSeen(expr)
 
-    def leave_LOW(expr):
+    def leave_LOW(self, expr):
         neverSeen(expr)
 
     #   Mem Ops
@@ -132,7 +132,7 @@ class NullZ3Embedder(Z3Embedder):
     def leave_While(self, stmt):
         neverSeen(stmt)
 
-    def leave_If(self, stmt):
+    def visit_If(self, stmt):
         neverSeen(stmt)
 
     def leave_CpuExn(self, stmt):
