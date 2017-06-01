@@ -1,11 +1,19 @@
 from bap import disasm
 from bap.adt import Visitor
 from ..util import flatten
-from z3 import If, BitVec, eq, Const, And
+from z3 import If, eq, Const, And, BitVecRef, ArrayRef, BitVecNumRef, \
+        BitVecVal, BitVecSort
+from re import compile
 
 
 def boolToBV(boolExp, ctx):
-    return If(boolExp, BitVec(1, 1, ctx=ctx), BitVec(0, 1, ctx=ctx), ctx=ctx)
+    return If(boolExp, BitVecVal(1, 1, ctx=ctx), BitVecVal(0, 1, ctx=ctx),
+              ctx=ctx)
+
+
+def bvToBool(bvExp, ctx):
+    assert eq(bvExp.sort(), BitVecSort(1, ctx=ctx))
+    return bvExp == BitVecVal(1, 1, ctx)
 
 
 def bitsToBil(bits, target='x86-64'):
@@ -19,6 +27,39 @@ def neverSeen(adt):
 class Stack(list):
     def push(self, arg):
         return self.append(arg)
+
+
+def z3Ids(z3Term):
+    if len(z3Term.children()) == 0:
+            if (isinstance(z3Term, BitVecRef) or
+               isinstance(z3Term, ArrayRef)) and \
+               not isinstance(z3Term, BitVecNumRef):
+                return set([(z3Term.decl().name(), z3Term.sort())])
+            else:
+                return set()
+    else:
+        return reduce(lambda acc, el:    acc.union(z3Ids(el)),
+                      z3Term.children(),
+                      set())
+
+
+ssaRE = compile("(.*)\.([0-9])*")
+initialRE = compile("(.*)\.initial*")
+unknownRE = compile("unknown_[0-9]*")
+
+
+def unssa(name):
+    m = ssaRE.match(name)
+    assert m
+    return (m.groups()[0], int(m.groups()[1]))
+
+
+def isInitial(name):
+    return initialRE.match(name) is not None
+
+
+def isUnknown(name):
+    return unknownRE.match(name) is not None
 
 
 class StmtNode:
@@ -85,8 +126,8 @@ class StmtNode:
 
 
 class StmtDef(StmtNode):
-    def __init__(self, parent, **kwArgs):
-        StmtNode.__init__(self, [parent])
+    def __init__(self, parents, **kwArgs):
+        StmtNode.__init__(self, parents)
         self.mDef = kwArgs
         self.mSort = {k: v.sort() for (k, v) in kwArgs.iteritems()}
 
@@ -111,29 +152,57 @@ class Z3Embedder(Visitor):
     def __init__(self, ctx):
         Visitor.__init__(self)
         self.mStack = Stack()
-        self.mRoot = StmtNode([])
-        self.mScope = self.mRoot
+        self.mNodeMap = {}
         self.mCtx = ctx
+
+        initialState = {name: Const(name + ".initial", sort)
+                        for name, sort in self.arch_state()}
+        self.mRoot = StmtDef([], **initialState)
+        self.mScope = self.mRoot
+        self.mNodeMap = {self.mScope.mId: self.mScope}
+        self.mNumUnknowns = 0
+
+    def getFreshUnknown(self, typ):
+        newUnknown = "unknown_" + str(self.mNumUnknowns)
+        z3Unknown = Const(newUnknown, typ)
+        self.mScope.mDef[newUnknown] = z3Unknown
+        self.mScope.mSort[newUnknown] = typ
+
+        self.mNumUnknowns += 1
+        return z3Unknown
 
     def pushScope(self, **kwArgs):
         if (len(kwArgs) == 0):
             raise TypeError("Can't push a scope unless we modify some vars")
 
-        self.mScope = StmtDef(self.mScope, **kwArgs)
+        self.mScope = StmtDef([self.mScope], **kwArgs)
+        self.mNodeMap[self.mScope.mId] = self.mScope
 
     def pushBranchScope(self, prefix, cond, fromScope):
         self.mScope = StmtBranch(fromScope, cond, prefix)
+        print "Branch: ", self.mScope.mId
+        self.mNodeMap[self.mScope.mId] = self.mScope
 
     def pushJoinScope(self, left, right, split):
         self.mScope = StmtJoin([left, right], split)
+        print "Join: ", self.mScope.mId
+        self.mNodeMap[self.mScope.mId] = self.mScope
 
     def popScope(self):
         # Can only pop Def scopes (related to Let exprs)
         assert len(self.mScope.mParents) == 1 and\
             isinstance(self.mScope, StmtDef)
         res = self.mScope
+
         self.mScope = self.mScope.mParents[0]
         return res
+
+    def lookupNode(self, id):
+        try:
+            return self.mNodeMap[id]
+        except KeyError, e:
+            print self.mNodeMap
+            raise e
 
     def lookup(self, name):
         defNode = self.mScope.lookupDef(name)
@@ -145,45 +214,47 @@ class Z3Embedder(Visitor):
     def scopeMarker(self):
         return self.mScope
 
-    def extract(self, node=None, visited={}):
-        if (node is None):
-            node = self.mScope
-
-        if (node in visited):
-            return []
-        else:
-            visited[node] = True
-
-        z3Asserts = []
-        for n in node.mParents:
-            z3Asserts.extend(self.extract(n))
-
+    def extract_one(self, node, name, sort):
+        ssaName = node.ssa(name)
+        defn = node.mDef[name]
         ctx = self.mCtx
+        asserts = []
+        if (isinstance(defn, set)):
+            asserts.extend(reduce(
+                    lambda acc, nd:  acc + self.extract_one(nd, name, sort),
+                    defn, []))
 
-        for name in node.mDef:
-            z3Sort = node.mSort[name]
-            ssaName = node.ssa(name)
-            if (isinstance(node.mDef[name], set)):
-                defs = node.mDef[name]
-                assert len(defs) > 1
-
-                # There is at least 1 unconditional definition (initial state)
-                # This is the base case of the fold
-                baseDef = [x for x in defs if len(x.cond(self.mRoot)) == 0]
-                assert len(baseDef) == 1
-                baseDef = baseDef[0]
-                otherDefs = filter(lambda x:    x != baseDef, defs)
-
-                z3Val = reduce(
-                    lambda acc, el:  If(And(*(el.cond(self.mRoot) + [ctx])),
-                                        Const(el.ssa(name), z3Sort),
-                                        acc),
+            baseDef = [x for x in defn if len(x.cond(self.mRoot)) == 0]
+            assert len(baseDef) == 1
+            baseDef = baseDef[0]
+            otherDefs = filter(lambda x:    x != baseDef, defn)
+            z3Val = reduce(
+                    lambda exp, d: If(And(*(d.cond(self.mRoot) + [ctx])),
+                                      Const(d.ssa(name), sort),
+                                      exp),
                     otherDefs,
-                    baseDef.mDef[name])
-            else:
-                z3Val = node.mDef[name]
+                    Const(baseDef.ssa(name), sort))
+        else:
+            for (id, idSort) in z3Ids(defn):
+                if isInitial(id) or isUnknown(id):
+                    continue
 
-            assertExp = Const(ssaName, z3Sort) == z3Val
-            z3Asserts.append(assertExp)
+                unssaName, ssaId = unssa(id)
+                defnNode = self.lookupNode(ssaId)
+                asserts.extend(self.extract_one(defnNode,
+                                                unssaName, idSort))
+            z3Val = defn
 
-        return z3Asserts
+        asserts.append(Const(ssaName, sort) == z3Val)
+        return asserts
+
+    def extract(self, node=None, visited={}):
+        asserts = []
+        for (name, sort) in self.arch_state():
+            asserts.extend(self.extract_one(self.mScope.lookupDef(name),
+                                            name, sort))
+
+        return asserts
+
+    def arch_state(self):
+        raise Exception("Abstract")

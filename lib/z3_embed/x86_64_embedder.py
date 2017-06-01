@@ -1,12 +1,10 @@
 from bap.bil import Exp, LittleEndian, Stmt
 from bap.adt import visit
-from z3 import BitVecVal, BitVecSort, Context, ArraySort, eq, Array,\
-    Select, Concat, Const, BitVec, Extract, ULE, ULT, LShR, Update, \
-    ZeroExt, If, SignExt, UDiv, URem
+from z3 import BitVecVal, BitVecSort, Context, ArraySort, eq, \
+    Select, Concat, Const, Extract, ULE, ULT, LShR, Update, \
+    ZeroExt, If, SignExt, UDiv, URem, Not
 from .null_embedder import NullZ3Embedder
-from .embedder import neverSeen, StmtDef, boolToBV
-
-unused = [neverSeen]
+from .embedder import boolToBV, bvToBool
 
 
 class X86_64Z3Embedder(NullZ3Embedder):
@@ -14,75 +12,56 @@ class X86_64Z3Embedder(NullZ3Embedder):
     """
     def __init__(self, ctx):
         NullZ3Embedder.__init__(self, ctx)
-        addr_size = 64
-        val_size = 8
 
-        self.mScope = \
-            StmtDef(self.mScope,
-                    # Heap
-                    mem64=Array("mem64",
-                                BitVecSort(addr_size, ctx=ctx),
-                                BitVecSort(val_size, ctx=ctx)),
-                    # Flags
-                    CF=BitVec("CF", 1, ctx=ctx),
-                    AF=BitVec("AF", 1, ctx=ctx),
-                    ZF=BitVec("ZF", 1, ctx=ctx),
-                    SF=BitVec("SF", 1, ctx=ctx),
-                    OF=BitVec("OF", 1, ctx=ctx),
-                    PF=BitVec("PF", 1, ctx=ctx),
-                    DF=BitVec("DF", 1, ctx=ctx),
-                    # Regs
-                    RAX=BitVec("RAX", 64, ctx=ctx),
-                    RBX=BitVec("RBX", 64, ctx=ctx),
-                    RCX=BitVec("RCX", 64, ctx=ctx),
-                    RDX=BitVec("RDX", 64, ctx=ctx),
-                    RSP=BitVec("RSP", 64, ctx=ctx),
-                    RBP=BitVec("RBP", 64, ctx=ctx),
-                    RSI=BitVec("RSI", 64, ctx=ctx),
-                    RDI=BitVec("RDI", 64, ctx=ctx),
-                    RIP=BitVec("RIP", 64, ctx=ctx),
-                    R8=BitVec("R8", 64, ctx=ctx),
-                    R9=BitVec("R9", 64, ctx=ctx),
-                    R10=BitVec("R10", 64, ctx=ctx),
-                    R11=BitVec("R11", 64, ctx=ctx),
-                    R12=BitVec("R12", 64, ctx=ctx),
-                    R13=BitVec("R13", 64, ctx=ctx),
-                    R14=BitVec("R14", 64, ctx=ctx),
-                    R15=BitVec("R15", 64, ctx=ctx),
-                    # Segment Registers
-                    FS_BASE=BitVec("fs", 64, ctx=ctx),
-                    GS_BASE=BitVec("gs", 64, ctx=ctx),
-                    SS_BASE=BitVec("ss", 64, ctx=ctx),
-                    DS_BASE=BitVec("ds", 64, ctx=ctx),
-                    # AVX Registers
-                    YMM0=BitVec("YMM0", 256, ctx=ctx),
-                    YMM1=BitVec("YMM1", 256, ctx=ctx),
-                    YMM2=BitVec("YMM2", 256, ctx=ctx),
-                    YMM3=BitVec("YMM3", 256, ctx=ctx),
-                    YMM4=BitVec("YMM4", 256, ctx=ctx),
-                    YMM5=BitVec("YMM5", 256, ctx=ctx),
-                    YMM6=BitVec("YMM6", 256, ctx=ctx),
-                    YMM7=BitVec("YMM7", 256, ctx=ctx),
-                    YMM8=BitVec("YMM8", 256, ctx=ctx),
-                    YMM9=BitVec("YMM9", 256, ctx=ctx),
-                    YMM10=BitVec("YMM10", 256, ctx=ctx),
-                    YMM11=BitVec("YMM11", 256, ctx=ctx),
-                    YMM12=BitVec("YMM12", 256, ctx=ctx),
-                    YMM13=BitVec("YMM13", 256, ctx=ctx),
-                    YMM14=BitVec("YMM14", 256, ctx=ctx),
-                    YMM15=BitVec("YMM15", 256, ctx=ctx),
-                    # Model only registers
-                    CPUEXN=BitVec("CPUEXN", 1, ctx=ctx))  # is excn raised?
-        self.mNumUnknowns = 0
-
-    def getFreshUnknown(self, typ):
-        newUnknown = "unknown_" + str(self.mNumUnknowns)
-        z3Unknown = Const(newUnknown, typ)
-        self.mScope.mDef[newUnknown] = z3Unknown
-        self.mScope.mSort[newUnknown] = typ
-
-        self.mNumUnknowns += 1
-        return z3Unknown
+    def arch_state(self):
+        ctx = self.mCtx
+        return [("mem64", ArraySort(BitVecSort(64, ctx=ctx),
+                                    BitVecSort(8, ctx=ctx))),
+                ("CF", BitVecSort(1, ctx=ctx)),
+                ("AF", BitVecSort(1, ctx=ctx)),
+                ("ZF", BitVecSort(1, ctx=ctx)),
+                ("SF", BitVecSort(1, ctx=ctx)),
+                ("OF", BitVecSort(1, ctx=ctx)),
+                ("PF", BitVecSort(1, ctx=ctx)),
+                ("DF", BitVecSort(1, ctx=ctx)),
+                ("RAX", BitVecSort(64, ctx=ctx)),
+                ("RBX", BitVecSort(64, ctx=ctx)),
+                ("RCX", BitVecSort(64, ctx=ctx)),
+                ("RDX", BitVecSort(64, ctx=ctx)),
+                ("RSP", BitVecSort(64, ctx=ctx)),
+                ("RBP", BitVecSort(64, ctx=ctx)),
+                ("RSI", BitVecSort(64, ctx=ctx)),
+                ("RDI", BitVecSort(64, ctx=ctx)),
+                ("RIP", BitVecSort(64, ctx=ctx)),
+                ("R8", BitVecSort(64, ctx=ctx)),
+                ("R9", BitVecSort(64, ctx=ctx)),
+                ("R10", BitVecSort(64, ctx=ctx)),
+                ("R11", BitVecSort(64, ctx=ctx)),
+                ("R12", BitVecSort(64, ctx=ctx)),
+                ("R13", BitVecSort(64, ctx=ctx)),
+                ("R14", BitVecSort(64, ctx=ctx)),
+                ("R15", BitVecSort(64, ctx=ctx)),
+                ("FS_BASE", BitVecSort(64, ctx=ctx)),
+                ("GS_BASE", BitVecSort(64, ctx=ctx)),
+                ("SS_BASE", BitVecSort(64, ctx=ctx)),
+                ("DS_BASE", BitVecSort(64, ctx=ctx)),
+                ("YMM0", BitVecSort(256, ctx=ctx)),
+                ("YMM1", BitVecSort(256, ctx=ctx)),
+                ("YMM2", BitVecSort(256, ctx=ctx)),
+                ("YMM3", BitVecSort(256, ctx=ctx)),
+                ("YMM4", BitVecSort(256, ctx=ctx)),
+                ("YMM5", BitVecSort(256, ctx=ctx)),
+                ("YMM6", BitVecSort(256, ctx=ctx)),
+                ("YMM7", BitVecSort(256, ctx=ctx)),
+                ("YMM8", BitVecSort(256, ctx=ctx)),
+                ("YMM9", BitVecSort(256, ctx=ctx)),
+                ("YMM10", BitVecSort(256, ctx=ctx)),
+                ("YMM11", BitVecSort(256, ctx=ctx)),
+                ("YMM12", BitVecSort(256, ctx=ctx)),
+                ("YMM13", BitVecSort(256, ctx=ctx)),
+                ("YMM14", BitVecSort(256, ctx=ctx)),
+                ("YMM15", BitVecSort(256, ctx=ctx)),
+                ("CPUEXN", BitVecSort(1, ctx=ctx))]
 
     # Types
     def leave_Imm(self, typ):
@@ -130,8 +109,7 @@ class X86_64Z3Embedder(NullZ3Embedder):
         falseE = self.mStack.pop()
         trueE = self.mStack.pop()
         cond = self.mStack.pop()
-        assert eq(cond.sort(), BitVecSort(1, ctx=self.mCtx))
-        boolCond = cond == BitVecVal(1, 1, ctx=self.mCtx)
+        boolCond = bvToBool(cond, self.mCtx)
         self.mStack.push(If(boolCond, trueE, falseE, ctx=self.mCtx))
 
     #   Binary Ops
@@ -369,6 +347,7 @@ class X86_64Z3Embedder(NullZ3Embedder):
                 str(expr.sort())
 
         self.pushScope(**{newBindingName: expr})
+        print self.mScope.ssa(newBindingName), ":=", expr
         return True
 
     def visit_If(self, stmt):
@@ -385,14 +364,14 @@ class X86_64Z3Embedder(NullZ3Embedder):
         beforeIf = self.scopeMarker()
 
         # run on if branch
-        trueCond = z3Cond == BitVecVal(1, 1, self.mCtx)
+        trueCond = bvToBool(z3Cond)
         self.pushBranchScope('.if_true', trueCond, beforeIf)
         self.run(if_stmt)
 
         endIfStmt = self.scopeMarker()
 
         # run on else branch (reading from current position on stack)
-        falseCond = z3Cond == BitVecVal(0, 1, self.mCtx)
+        falseCond = Not(trueCond, ctx=self.mCtx)
         self.pushBranchScope('.if_false', falseCond, beforeIf)
         self.run(else_stmt)
 
@@ -409,64 +388,9 @@ class X86_64Z3Embedder(NullZ3Embedder):
     def leave_CpuExn(self, stmt):
         self.pushScope(CPUEXN=BitVecVal(1, 1, ctx=self.mCtx))
 
-    def finish(self):
-        for var in ["mem64",
-                    # Flags
-                    "CF",
-                    "AF",
-                    "ZF",
-                    "SF",
-                    "OF",
-                    "PF",
-                    "DF",
-                    # Regs
-                    "RAX",
-                    "RBX",
-                    "RCX",
-                    "RDX",
-                    "RSP",
-                    "RBP",
-                    "RSI",
-                    "RDI",
-                    "RIP",
-                    "R8",
-                    "R9",
-                    "R10",
-                    "R11",
-                    "R12",
-                    "R13",
-                    "R14",
-                    "R15",
-                    # Segment Registers
-                    "fs",
-                    "gs",
-                    "ss",
-                    "ds",
-                    # AVX Registers
-                    "YMM0",
-                    "YMM1",
-                    "YMM2",
-                    "YMM3",
-                    "YMM4",
-                    "YMM5",
-                    "YMM6",
-                    "YMM7",
-                    "YMM8",
-                    "YMM9",
-                    "YMM10",
-                    "YMM11",
-                    "YMM12",
-                    "YMM13",
-                    "YMM14",
-                    "YMM15",
-                    # Model only registers
-                    "CPUEXN"]:
-            self.lookup(var)
-
 
 def embed(bil):
     visitor = X86_64Z3Embedder(Context())
     visit(visitor, bil)
-    visitor.finish()
     assert len(visitor.mStack) == 0
     return visitor
