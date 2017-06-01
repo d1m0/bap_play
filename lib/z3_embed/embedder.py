@@ -1,7 +1,7 @@
 from bap import disasm
 from bap.adt import Visitor
 from ..util import flatten
-from z3 import If, BitVec, eq
+from z3 import If, BitVec, eq, Const, And
 
 
 def boolToBV(boolExp, ctx):
@@ -50,7 +50,7 @@ class StmtNode:
                 # name has been defined independently in different branches.
                 # Need a phi def here
                 # Make sure all definitions have the same sort
-                s = defs[0].mSort[name]
+                s = list(defs)[0].mSort[name]
                 for d in defs:
                     assert eq(s, d.mSort[name])
 
@@ -64,9 +64,9 @@ class StmtNode:
         if (self == other):
             return []
         elif (len(self.mParents) == 1):
-            c = self.mParents[0].cond()
+            c = self.mParents[0].cond(other)
         elif (len(self.mParents) > 1):
-            c = self.mSplitSrc.cond()
+            c = self.mSplitSrc.cond(other)
         else:
             assert False, str(other) + " doesn't dominate " + str(self)
 
@@ -80,6 +80,9 @@ class StmtNode:
         else:
             return self.mPrefix
 
+    def ssa(self, name):
+        return name + self.prefix() + "." + str(self.mId)
+
 
 class StmtDef(StmtNode):
     def __init__(self, parent, **kwArgs):
@@ -91,7 +94,7 @@ class StmtDef(StmtNode):
 class StmtBranch(StmtNode):
     def __init__(self, parent, cond, prefix):
         StmtNode.__init__(self, [parent])
-        self.mCond = cond
+        self.mCond = [cond]
         self.mPrefix = prefix
 
 
@@ -135,10 +138,52 @@ class Z3Embedder(Visitor):
     def lookup(self, name):
         defNode = self.mScope.lookupDef(name)
         if (defNode):
-            return (name + defNode.prefix() + "." + str(defNode.mId),
-                    defNode.mSort[name])
+            return (defNode.ssa(name), defNode.mSort[name])
         else:
             return (name, None)
 
     def scopeMarker(self):
         return self.mScope
+
+    def extract(self, node=None, visited={}):
+        if (node is None):
+            node = self.mScope
+
+        if (node in visited):
+            return []
+        else:
+            visited[node] = True
+
+        z3Asserts = []
+        for n in node.mParents:
+            z3Asserts.extend(self.extract(n))
+
+        ctx = self.mCtx
+
+        for name in node.mDef:
+            z3Sort = node.mSort[name]
+            ssaName = node.ssa(name)
+            if (isinstance(node.mDef[name], set)):
+                defs = node.mDef[name]
+                assert len(defs) > 1
+
+                # There is at least 1 unconditional definition (initial state)
+                # This is the base case of the fold
+                baseDef = [x for x in defs if len(x.cond(self.mRoot)) == 0]
+                assert len(baseDef) == 1
+                baseDef = baseDef[0]
+                otherDefs = filter(lambda x:    x != baseDef, defs)
+
+                z3Val = reduce(
+                    lambda acc, el:  If(And(*(el.cond(self.mRoot) + [ctx])),
+                                        Const(el.ssa(name), z3Sort),
+                                        acc),
+                    otherDefs,
+                    baseDef.mDef[name])
+            else:
+                z3Val = node.mDef[name]
+
+            assertExp = Const(ssaName, z3Sort) == z3Val
+            z3Asserts.append(assertExp)
+
+        return z3Asserts

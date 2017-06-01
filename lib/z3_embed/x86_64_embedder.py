@@ -32,22 +32,23 @@ class X86_64Z3Embedder(NullZ3Embedder):
                     PF=BitVec("PF", 1, ctx=ctx),
                     DF=BitVec("DF", 1, ctx=ctx),
                     # Regs
-                    RAX=BitVec("RAX.0", 64, ctx=ctx),
-                    RBX=BitVec("RBX.0", 64, ctx=ctx),
-                    RCX=BitVec("RCX.0", 64, ctx=ctx),
-                    RDX=BitVec("RDX.0", 64, ctx=ctx),
-                    RSP=BitVec("RSP.0", 64, ctx=ctx),
-                    RBP=BitVec("RBP.0", 64, ctx=ctx),
-                    RSI=BitVec("RSI.0", 64, ctx=ctx),
-                    RDI=BitVec("RDI.0", 64, ctx=ctx),
-                    R8=BitVec("R8.0", 64, ctx=ctx),
-                    R9=BitVec("R9.0", 64, ctx=ctx),
-                    R10=BitVec("R10.0", 64, ctx=ctx),
-                    R11=BitVec("R11.0", 64, ctx=ctx),
-                    R12=BitVec("R12.0", 64, ctx=ctx),
-                    R13=BitVec("R13.0", 64, ctx=ctx),
-                    R14=BitVec("R14.0", 64, ctx=ctx),
-                    R15=BitVec("R15.0", 64, ctx=ctx),
+                    RAX=BitVec("RAX", 64, ctx=ctx),
+                    RBX=BitVec("RBX", 64, ctx=ctx),
+                    RCX=BitVec("RCX", 64, ctx=ctx),
+                    RDX=BitVec("RDX", 64, ctx=ctx),
+                    RSP=BitVec("RSP", 64, ctx=ctx),
+                    RBP=BitVec("RBP", 64, ctx=ctx),
+                    RSI=BitVec("RSI", 64, ctx=ctx),
+                    RDI=BitVec("RDI", 64, ctx=ctx),
+                    RIP=BitVec("RIP", 64, ctx=ctx),
+                    R8=BitVec("R8", 64, ctx=ctx),
+                    R9=BitVec("R9", 64, ctx=ctx),
+                    R10=BitVec("R10", 64, ctx=ctx),
+                    R11=BitVec("R11", 64, ctx=ctx),
+                    R12=BitVec("R12", 64, ctx=ctx),
+                    R13=BitVec("R13", 64, ctx=ctx),
+                    R14=BitVec("R14", 64, ctx=ctx),
+                    R15=BitVec("R15", 64, ctx=ctx),
                     # Segment Registers
                     FS_BASE=BitVec("fs", 64, ctx=ctx),
                     GS_BASE=BitVec("gs", 64, ctx=ctx),
@@ -408,9 +409,64 @@ class X86_64Z3Embedder(NullZ3Embedder):
     def leave_CpuExn(self, stmt):
         self.pushScope(CPUEXN=BitVecVal(1, 1, ctx=self.mCtx))
 
+    def finish(self):
+        for var in ["mem64",
+                    # Flags
+                    "CF",
+                    "AF",
+                    "ZF",
+                    "SF",
+                    "OF",
+                    "PF",
+                    "DF",
+                    # Regs
+                    "RAX",
+                    "RBX",
+                    "RCX",
+                    "RDX",
+                    "RSP",
+                    "RBP",
+                    "RSI",
+                    "RDI",
+                    "RIP",
+                    "R8",
+                    "R9",
+                    "R10",
+                    "R11",
+                    "R12",
+                    "R13",
+                    "R14",
+                    "R15",
+                    # Segment Registers
+                    "fs",
+                    "gs",
+                    "ss",
+                    "ds",
+                    # AVX Registers
+                    "YMM0",
+                    "YMM1",
+                    "YMM2",
+                    "YMM3",
+                    "YMM4",
+                    "YMM5",
+                    "YMM6",
+                    "YMM7",
+                    "YMM8",
+                    "YMM9",
+                    "YMM10",
+                    "YMM11",
+                    "YMM12",
+                    "YMM13",
+                    "YMM14",
+                    "YMM15",
+                    # Model only registers
+                    "CPUEXN"]:
+            self.lookup(var)
+
 
 def embed(bil):
     visitor = X86_64Z3Embedder(Context())
     visit(visitor, bil)
+    visitor.finish()
     assert len(visitor.mStack) == 0
     return visitor

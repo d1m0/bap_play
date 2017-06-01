@@ -35,6 +35,9 @@ with open('../libxul.hex') as f:
         try:
             StmtNode.sId = 0  # 0-out ctr for easy reading
             z3Vis = embed(bil)
+            print bil
+            print z3Vis.extract()
+            break
         except AssertionError, e:
             print e.message
             print l.strip()
