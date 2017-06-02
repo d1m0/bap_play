@@ -1,8 +1,8 @@
 from bap import disasm
-from bap.adt import Visitor
+from bap.adt import Visitor, visit
 from ..util import flatten
 from z3 import If, eq, Const, And, BitVecRef, ArrayRef, BitVecNumRef, \
-        BitVecVal, BitVecSort
+        BitVecVal, BitVecSort, Context
 from re import compile
 
 
@@ -39,7 +39,7 @@ def z3Ids(z3Term):
                       set())
 
 
-ssaRE = compile("(.*)\.([0-9])*")
+ssaRE = compile("(.*)\.([0-9]*)")
 initialRE = compile("(.*)\.initial*")
 unknownRE = compile("unknown_[0-9]*")
 
@@ -249,7 +249,7 @@ class Z3Embedder(Visitor):
         emitted.add((node, name))
         return asserts
 
-    def extract(self, node=None, visited={}):
+    def extract(self):
         asserts = []
         emitted = set()
         for (name, sort) in self.arch_state():
@@ -260,3 +260,10 @@ class Z3Embedder(Visitor):
 
     def arch_state(self):
         raise Exception("Abstract")
+
+
+def embed(bil, visitor_class):
+    visitor = visitor_class(Context())
+    visit(visitor, bil)
+    assert len(visitor.mStack) == 0
+    return visitor.extract()
