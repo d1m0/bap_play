@@ -13,15 +13,15 @@ fi
 MYDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DIR="$( cd $1 && pwd )"
 
+virtualenv $DIR
+
+source $DIR/bin/activate
+
 # Install opam and bap-server
 opam init --comp=4.02.3    # install the compiler
 opam repo add bap git://github.com/BinaryAnalysisPlatform/opam-repository
 eval `opam config env`               # activate opam environment
 opam depext --install bap-server     # install bap-server
-
-virtualenv $DIR
-
-source $DIR/bin/activate
 
 pip install bap[rpc]
 
@@ -40,4 +40,5 @@ if [ ! -e $DIR/bin/z3 ]; then
   popd
 fi
 
+echo 'eval `opam config env`' >> $DIR/bin/activate
 echo "To begin developing run source $DIR/bin/activate and then make"
