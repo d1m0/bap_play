@@ -18,10 +18,11 @@ virtualenv $DIR
 source $DIR/bin/activate
 
 # Install opam and bap-server
-opam init --comp=4.02.3    # install the compiler
-opam repo add bap git://github.com/BinaryAnalysisPlatform/opam-repository
-eval `opam config env`               # activate opam environment
-opam depext --install bap-server     # install bap-server
+# For now I can't get these to run without sudo
+#opam init --comp=4.02.3    # install the compiler
+#opam repo add bap git://github.com/BinaryAnalysisPlatform/opam-repository
+#eval `opam config env`               # activate opam environment
+#opam depext --install bap-server     # install bap-server
 
 pip install bap[rpc]
 
