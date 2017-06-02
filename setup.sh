@@ -13,6 +13,11 @@ fi
 MYDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DIR="$( cd $1 && pwd )"
 
+# Install opam and bap-server
+opam init --comp=4.02.3    # install the compiler
+opam repo add bap git://github.com/BinaryAnalysisPlatform/opam-repository
+eval `opam config env`               # activate opam environment
+opam depext --install bap-server     # install bap-server
 
 virtualenv $DIR
 
