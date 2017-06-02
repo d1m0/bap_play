@@ -1,7 +1,15 @@
-from .embedder import Z3Embedder, neverSeen
+from .embedder import Z3Embedder
+
+
+def neverSeen(adt):
+    assert False, "Never seen " + adt.constr
 
 
 class NullZ3Embedder(Z3Embedder):
+    """ NullZ3Embedder raises an exception for every type of BIL node.
+        Subclass concrete Embedders from this class, so that we fail
+        loudly if we forgot to implement something.
+    """
     def __init__(self, ctx):
         Z3Embedder.__init__(self, ctx)
 

@@ -20,10 +20,6 @@ def bitsToBil(bits, target='x86-64'):
     return flatten([x.bil for x in disasm(bits.toBinStr(), arch=target)])
 
 
-def neverSeen(adt):
-    assert False, "Never seen " + adt.constr
-
-
 class Stack(list):
     def push(self, arg):
         return self.append(arg)
