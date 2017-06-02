@@ -180,12 +180,10 @@ class Z3Embedder(Visitor):
 
     def pushBranchScope(self, prefix, cond, fromScope):
         self.mScope = StmtBranch(fromScope, cond, prefix)
-        print "Branch: ", self.mScope.mId
         self.mNodeMap[self.mScope.mId] = self.mScope
 
     def pushJoinScope(self, left, right, split):
         self.mScope = StmtJoin([left, right], split)
-        print "Join: ", self.mScope.mId
         self.mNodeMap[self.mScope.mId] = self.mScope
 
     def popScope(self):
@@ -214,14 +212,18 @@ class Z3Embedder(Visitor):
     def scopeMarker(self):
         return self.mScope
 
-    def extract_one(self, node, name, sort):
+    def extract_one(self, node, name, sort, emitted):
+        if (node, name) in emitted:
+            return []
+
         ssaName = node.ssa(name)
         defn = node.mDef[name]
         ctx = self.mCtx
         asserts = []
         if (isinstance(defn, set)):
             asserts.extend(reduce(
-                    lambda acc, nd:  acc + self.extract_one(nd, name, sort),
+                    lambda acc, nd:  acc + self.extract_one(nd, name, sort,
+                                                            emitted),
                     defn, []))
 
             baseDef = [x for x in defn if len(x.cond(self.mRoot)) == 0]
@@ -237,22 +239,26 @@ class Z3Embedder(Visitor):
         else:
             for (id, idSort) in z3Ids(defn):
                 if isInitial(id) or isUnknown(id):
+                    # Initial values and unknowns are not defined in
+                    # any scope
                     continue
 
                 unssaName, ssaId = unssa(id)
                 defnNode = self.lookupNode(ssaId)
                 asserts.extend(self.extract_one(defnNode,
-                                                unssaName, idSort))
+                                                unssaName, idSort, emitted))
             z3Val = defn
 
         asserts.append(Const(ssaName, sort) == z3Val)
+        emitted.add((node, name))
         return asserts
 
     def extract(self, node=None, visited={}):
         asserts = []
+        emitted = set()
         for (name, sort) in self.arch_state():
             asserts.extend(self.extract_one(self.mScope.lookupDef(name),
-                                            name, sort))
+                                            name, sort, emitted))
 
         return asserts
 

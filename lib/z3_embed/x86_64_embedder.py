@@ -347,7 +347,6 @@ class X86_64Z3Embedder(NullZ3Embedder):
                 str(expr.sort())
 
         self.pushScope(**{newBindingName: expr})
-        print self.mScope.ssa(newBindingName), ":=", expr
         return True
 
     def visit_If(self, stmt):
