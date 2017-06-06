@@ -1,0 +1,20 @@
+[package]
+name="cretonne-semantics"
+authors=["The Cretonne Project Developers"]
+version="0.0.0"
+description="Playground for coming up with Cretonne semantics"
+repository="https://github.com/d1m0/bap_play"
+publish=false
+
+[[bin]]
+name="test"
+path="src/test.rs"
+
+[dependencies]
+cretonne = { path = "../cretonne/lib/cretonne" }
+cretonne-reader = { path = "../cretonne/lib/reader" }
+docopt = "0.6.86"
+rustc-serialize = "0.3.24"
+z3 = { path = "../z3-rs" }
+log = "0.3.8"
+env_logger =  "0.4.3"
